@@ -15,21 +15,21 @@ jobs:
         with:
           fetch-depth: 0  # Fetch full history for better commit info
       
-      - name: Create .env file
-        run: |
-          cat << EOF > .env
-          VITE_BASE_SERVICE_URL=${{ vars.DEV_VITE_BASE_SERVICE_URL }}
-          VITE_FR_SERVICE_URL=${{ vars.DEV_VITE_FR_SERVICE_URL }}
-          VITE_KEYBOARD_SERVICE_URL=${{ vars.DEV_VITE_KEYBOARD_SERVICE_URL }}
-          VITE_LIVE_SERVICE_URL=${{ vars.DEV_VITE_LIVE_SERVICE_URL }}
-          VITE_NEWSGPT_SERVICE_URL=${{ vars.DEV_VITE_NEWSGPT_SERVICE_URL }}
-          VITE_PUBLIC_TINYMCE_API_KEY=${{ vars.DEV_VITE_PUBLIC_TINYMCE_API_KEY }}
-          VITE_STT_LIVE_SERVICE_URL=${{ vars.DEV_VITE_STT_LIVE_SERVICE_URL }}
-          VITE_STT_LIVE_STREAMING_SERVICE_URL=${{ vars.DEV_VITE_STT_LIVE_STREAMING_SERVICE_URL }}
-          VITE_WORD_CLOUD_BASE_SERVICE_URL=${{ vars.DEV_VITE_WORD_CLOUD_BASE_SERVICE_URL }}
-          VITE_WORD_CLOUD_IMAGES_URL=${{ vars.DEV_VITE_WORD_CLOUD_IMAGES_URL }}
-          VITE_WORLDCLOUD_NEWSGPT_URL=${{ vars.DEV_VITE_WORLDCLOUD_NEWSGPT_URL }}
-          EOF
+      # - name: Create .env file
+      #   run: |
+      #     cat << EOF > .env
+      #     VITE_BASE_SERVICE_URL=${{ vars.DEV_VITE_BASE_SERVICE_URL }}
+      #     VITE_FR_SERVICE_URL=${{ vars.DEV_VITE_FR_SERVICE_URL }}
+      #     VITE_KEYBOARD_SERVICE_URL=${{ vars.DEV_VITE_KEYBOARD_SERVICE_URL }}
+      #     VITE_LIVE_SERVICE_URL=${{ vars.DEV_VITE_LIVE_SERVICE_URL }}
+      #     VITE_NEWSGPT_SERVICE_URL=${{ vars.DEV_VITE_NEWSGPT_SERVICE_URL }}
+      #     VITE_PUBLIC_TINYMCE_API_KEY=${{ vars.DEV_VITE_PUBLIC_TINYMCE_API_KEY }}
+      #     VITE_STT_LIVE_SERVICE_URL=${{ vars.DEV_VITE_STT_LIVE_SERVICE_URL }}
+      #     VITE_STT_LIVE_STREAMING_SERVICE_URL=${{ vars.DEV_VITE_STT_LIVE_STREAMING_SERVICE_URL }}
+      #     VITE_WORD_CLOUD_BASE_SERVICE_URL=${{ vars.DEV_VITE_WORD_CLOUD_BASE_SERVICE_URL }}
+      #     VITE_WORD_CLOUD_IMAGES_URL=${{ vars.DEV_VITE_WORD_CLOUD_IMAGES_URL }}
+      #     VITE_WORLDCLOUD_NEWSGPT_URL=${{ vars.DEV_VITE_WORLDCLOUD_NEWSGPT_URL }}
+      #     EOF
       
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -45,13 +45,12 @@ jobs:
         run: |
           COMMIT_HASH=$(echo ${{ github.sha }} | cut -c1-8)
           DOCKER_TAG="forbmax123/formedia:frontend-user-${COMMIT_HASH}"
-          HARBOR_TAG="harbor.forbmax.ai/formedia/forbmax123/formedia:frontend-user-${COMMIT_HASH}"
+        
           COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
           COMMIT_AUTHOR="${{ github.event.head_commit.author.name }}"
           
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
-          echo "harbor_tag=${HARBOR_TAG}" >> $GITHUB_OUTPUT
-          echo "commit_hash=${COMMIT_HASH}" >> $GITHUB_OUTPUT
+        
           echo "commit_message=${COMMIT_MESSAGE}" >> $GITHUB_OUTPUT
           echo "commit_author=${COMMIT_AUTHOR}" >> $GITHUB_OUTPUT
           echo "cache_key=frontend-user-cache" >> $GITHUB_OUTPUT
@@ -71,71 +70,71 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
       
-      - name: Update GitOps repository
-        env:
-          DOCKER_TAG: ${{ steps.vars.outputs.docker_tag }}
-          HARBOR_TAG: ${{ steps.vars.outputs.harbor_tag }}
-          COMMIT_HASH: ${{ steps.vars.outputs.commit_hash }}
-          COMMIT_MESSAGE: ${{ steps.vars.outputs.commit_message }}
-          COMMIT_AUTHOR: ${{ steps.vars.outputs.commit_author }}
-        run: |
-          # Set up git configuration
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+      # - name: Update GitOps repository
+      #   env:
+      #     DOCKER_TAG: ${{ steps.vars.outputs.docker_tag }}
+      #     HARBOR_TAG: ${{ steps.vars.outputs.harbor_tag }}
+      #     COMMIT_HASH: ${{ steps.vars.outputs.commit_hash }}
+      #     COMMIT_MESSAGE: ${{ steps.vars.outputs.commit_message }}
+      #     COMMIT_AUTHOR: ${{ steps.vars.outputs.commit_author }}
+      #   run: |
+      #     # Set up git configuration
+      #     git config --global user.name "github-actions[bot]"
+      #     git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Clone the GitOps repository
-          echo "Cloning GitOps repository..."
-          git clone https://github-actions:${{ secrets.GITOPS_REPO_SECRET }}@github.com/Formedia-forbmax/gitops.git gitops-repo
-          cd gitops-repo
+      #     # Clone the GitOps repository
+      #     echo "Cloning GitOps repository..."
+      #     git clone https://github-actions:${{ secrets.GITOPS_REPO_SECRET }}@github.com/Formedia-forbmax/gitops.git gitops-repo
+      #     cd gitops-repo
 
-          git checkout dev-kubernetes 
+      #     git checkout dev-kubernetes 
           
-          # Verify the deployment file exists
-          DEPLOYMENT_FILE="frontends/deployments/frontend-user.yaml"
-          if [ ! -f "$DEPLOYMENT_FILE" ]; then
-            echo "Error: Deployment file $DEPLOYMENT_FILE not found!"
-            exit 1
-          fi
+      #     # Verify the deployment file exists
+      #     DEPLOYMENT_FILE="frontends/deployments/frontend-user.yaml"
+      #     if [ ! -f "$DEPLOYMENT_FILE" ]; then
+      #       echo "Error: Deployment file $DEPLOYMENT_FILE not found!"
+      #       exit 1
+      #     fi
           
-          echo "Current image in deployment file:"
-          grep "image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user" $DEPLOYMENT_FILE || echo "No matching Harbor image line found"
+      #     echo "Current image in deployment file:"
+      #     grep "image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user" $DEPLOYMENT_FILE || echo "No matching Harbor image line found"
           
-          # Create a backup
-          cp $DEPLOYMENT_FILE ${DEPLOYMENT_FILE}.backup
+      #     # Create a backup
+      #     cp $DEPLOYMENT_FILE ${DEPLOYMENT_FILE}.backup
           
-          # Update the image tag using Harbor registry format
-          sed -i.bak "s|image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user-[a-zA-Z0-9]*|image: ${HARBOR_TAG}|g" $DEPLOYMENT_FILE
+      #     # Update the image tag using Harbor registry format
+      #     sed -i.bak "s|image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user-[a-zA-Z0-9]*|image: ${HARBOR_TAG}|g" $DEPLOYMENT_FILE
           
-          # Also handle the case where it might just be the base image without a tag
-          sed -i.bak2 "s|image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user[[:space:]]*#.*|image: ${HARBOR_TAG} # Updated by GitHub Actions|g" $DEPLOYMENT_FILE
+      #     # Also handle the case where it might just be the base image without a tag
+      #     sed -i.bak2 "s|image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user[[:space:]]*#.*|image: ${HARBOR_TAG} # Updated by GitHub Actions|g" $DEPLOYMENT_FILE
           
-          echo "Updated image in deployment file:"
-          grep "image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user" $DEPLOYMENT_FILE || echo "No matching Harbor image line found after update"
+      #     echo "Updated image in deployment file:"
+      #     grep "image: harbor\.forbmax\.ai/formedia/forbmax123/formedia:frontend-user" $DEPLOYMENT_FILE || echo "No matching Harbor image line found after update"
           
-          # Check if there are any changes
-          if git diff --quiet $DEPLOYMENT_FILE; then
-            echo "No changes detected in deployment file"
-            echo "This might indicate the sed command didn't match or the image was already up to date"
-            exit 1
-          fi
+      #     # Check if there are any changes
+      #     if git diff --quiet $DEPLOYMENT_FILE; then
+      #       echo "No changes detected in deployment file"
+      #       echo "This might indicate the sed command didn't match or the image was already up to date"
+      #       exit 1
+      #     fi
           
-          # Show the diff for debugging
-          echo "Changes made:"
-          git diff $DEPLOYMENT_FILE
+      #     # Show the diff for debugging
+      #     echo "Changes made:"
+      #     git diff $DEPLOYMENT_FILE
           
-          # Commit and push changes
-          git add $DEPLOYMENT_FILE
-          git commit -m "🚀 Update frontend-user image to ${COMMIT_HASH}
-          📦 Docker Hub: ${DOCKER_TAG}
-          🏗️ Harbor: ${HARBOR_TAG}
-          👤 Author: ${COMMIT_AUTHOR}
-          💬 Original: ${COMMIT_MESSAGE}
-          🔗 Source: ${{ github.repository }}@${{ github.sha }}"
+      #     # Commit and push changes
+      #     git add $DEPLOYMENT_FILE
+      #     git commit -m "🚀 Update frontend-user image to ${COMMIT_HASH}
+      #     📦 Docker Hub: ${DOCKER_TAG}
+      #     🏗️ Harbor: ${HARBOR_TAG}
+      #     👤 Author: ${COMMIT_AUTHOR}
+      #     💬 Original: ${COMMIT_MESSAGE}
+      #     🔗 Source: ${{ github.repository }}@${{ github.sha }}"
           
-          echo "Pushing changes to GitOps repository..."
-          git push origin HEAD:dev-kubernetes
+      #     echo "Pushing changes to GitOps repository..."
+      #     git push origin HEAD:dev-kubernetes
           
-          echo "✅ Successfully updated GitOps repository!"
+      #     echo "✅ Successfully updated GitOps repository!"
       
       - name: Summary
         if: success()
