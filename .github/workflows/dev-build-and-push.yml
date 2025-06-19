@@ -45,15 +45,34 @@ jobs:
         run: |
           COMMIT_HASH=$(echo ${{ github.sha }} | cut -c1-8)
           DOCKER_TAG="jazibumer/formedia:frontend-user-${COMMIT_HASH}"
-        
-          COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
-          COMMIT_AUTHOR="${{ github.event.head_commit.author.name }}"
           
+          # Handle commit message safely (escape quotes and newlines)
+          COMMIT_MESSAGE=$(echo '${{ github.event.head_commit.message }}' | tr -d '\n' | sed 's/"/\\"/g')
+          COMMIT_AUTHOR='${{ github.event.head_commit.author.name }}'
+          
+          # Check if current commit is a merge commit
+          PARENT_COUNT=$(git rev-list --parents -n 1 HEAD | wc -w)
+          IS_MERGE_COMMIT=$((PARENT_COUNT > 2))
+          
+          # Get the previous commit for potential reset
+          PREVIOUS_COMMIT=$(git rev-parse HEAD~1)
+          
+          # Set all outputs
+          echo "commit_hash=${COMMIT_HASH}" >> $GITHUB_OUTPUT
           echo "docker_tag=${DOCKER_TAG}" >> $GITHUB_OUTPUT
-        
           echo "commit_message=${COMMIT_MESSAGE}" >> $GITHUB_OUTPUT
           echo "commit_author=${COMMIT_AUTHOR}" >> $GITHUB_OUTPUT
           echo "cache_key=frontend-user-cache" >> $GITHUB_OUTPUT
+          echo "is_merge_commit=${IS_MERGE_COMMIT}" >> $GITHUB_OUTPUT
+          echo "previous_commit=${PREVIOUS_COMMIT}" >> $GITHUB_OUTPUT
+          
+          # Debug output
+          echo "Generated commit hash: ${COMMIT_HASH}"
+          echo "Generated docker tag: ${DOCKER_TAG}"
+          echo "Commit message: ${COMMIT_MESSAGE}"
+          echo "Commit author: ${COMMIT_AUTHOR}"
+          echo "Is merge commit: ${IS_MERGE_COMMIT}"
+          echo "Previous commit: ${PREVIOUS_COMMIT}"
       
       - name: Build and push Docker image
         id: docker_build
@@ -71,10 +90,12 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
       
-      - name: Revert commit on Docker build failure
+      - name: Smart revert on Docker build failure
         if: failure() && steps.docker_build.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🚨 Docker build failed! Reverting the last commit safely..."
+          echo "🚨 Docker build failed! Attempting smart revert..."
           
           # Configure git
           git config --global user.name "github-actions[bot]"
@@ -82,19 +103,202 @@ jobs:
           
           # Get the current commit info
           CURRENT_COMMIT=$(git rev-parse HEAD)
-          COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
+          COMMIT_MESSAGE="${{ steps.vars.outputs.commit_message }}"
+          IS_MERGE_COMMIT="${{ steps.vars.outputs.is_merge_commit }}"
+          PREVIOUS_COMMIT="${{ steps.vars.outputs.previous_commit }}"
           
           echo "Current commit: ${CURRENT_COMMIT}"
           echo "Current commit message: ${COMMIT_MESSAGE}"
+          echo "Is merge commit: ${IS_MERGE_COMMIT}"
+          echo "Previous commit: ${PREVIOUS_COMMIT}"
           
-          # Create a revert commit (safe way - no history rewriting)
-          git revert --no-edit HEAD
+          # Function to revert on a specific branch
+          revert_branch() {
+            local branch_name=$1
+            local strategy=$2
+            
+            echo "🔄 Attempting to revert on branch: ${branch_name} using strategy: ${strategy}"
+            
+            # Fetch and checkout the target branch
+            git fetch origin ${branch_name} || {
+              echo "⚠️ Branch ${branch_name} not found, skipping..."
+              return 1
+            }
+            git checkout ${branch_name}
+            
+            # Get the latest commit on this branch
+            local latest_commit=$(git rev-parse HEAD)
+            echo "Latest commit on ${branch_name}: ${latest_commit}"
+            
+            case "${strategy}" in
+              "merge_revert_m1")
+                if git revert -m 1 --no-edit HEAD; then
+                  echo "✅ Successfully reverted merge commit on ${branch_name} using -m 1"
+                  git push origin ${branch_name}
+                  return 0
+                fi
+                ;;
+              "merge_revert_m2")
+                if git revert -m 2 --no-edit HEAD; then
+                  echo "✅ Successfully reverted merge commit on ${branch_name} using -m 2"
+                  git push origin ${branch_name}
+                  return 0
+                fi
+                ;;
+              "regular_revert")
+                if git revert --no-edit HEAD; then
+                  echo "✅ Successfully reverted commit on ${branch_name}"
+                  git push origin ${branch_name}
+                  return 0
+                fi
+                ;;
+              "reset_strategy")
+                local prev_commit=$(git rev-parse HEAD~1)
+                git reset --soft ${prev_commit}
+                git commit -m "🚨 Revert failed Docker build from ${latest_commit}
+
+          Docker build failed for commit: ${latest_commit}
+          Original message: ${COMMIT_MESSAGE}
+          Branch: ${branch_name}
           
-          # Push the revert commit
-          git push origin dev-kubernetes
+          This commit reverts the changes to restore a working state.
           
-          echo "✅ Successfully reverted commit ${CURRENT_COMMIT}"
-          echo "🔄 Revert commit pushed to dev-kubernetes branch"
+          Auto-reverted by GitHub Actions due to build failure."
+                
+                if git push origin ${branch_name}; then
+                  echo "✅ Successfully reverted ${branch_name} using reset strategy"
+                  return 0
+                fi
+                ;;
+              "force_push")
+                local prev_commit=$(git rev-parse HEAD~1)
+                git reset --hard ${prev_commit}
+                if git push --force-with-lease origin ${branch_name}; then
+                  echo "⚠️ Force pushed ${branch_name} to previous commit: ${prev_commit}"
+                  return 0
+                fi
+                ;;
+            esac
+            
+            return 1
+          }
+          
+          # Determine if this is likely from a PR from main
+          IS_FROM_MAIN_PR=false
+          if [ "${IS_MERGE_COMMIT}" = "1" ] && echo "${COMMIT_MESSAGE}" | grep -i "merge pull request"; then
+            IS_FROM_MAIN_PR=true
+            echo "🔍 Detected this is likely a merge from main branch via PR"
+          fi
+          
+          # Strategy 1: Try to revert merge commit on dev-kubernetes
+          DEV_REVERTED=false
+          if [ "${IS_MERGE_COMMIT}" = "1" ]; then
+            echo "🔄 Attempting to revert merge commit on dev-kubernetes..."
+            
+            # Ensure we're on dev-kubernetes
+            git checkout dev-kubernetes
+            
+            if revert_branch "dev-kubernetes" "merge_revert_m1"; then
+              DEV_REVERTED=true
+            elif revert_branch "dev-kubernetes" "merge_revert_m2"; then
+              DEV_REVERTED=true
+            fi
+          else
+            # Regular commit revert
+            echo "🔄 Attempting to revert regular commit on dev-kubernetes..."
+            git checkout dev-kubernetes
+            if revert_branch "dev-kubernetes" "regular_revert"; then
+              DEV_REVERTED=true
+            fi
+          fi
+          
+          # Strategy 2: Fallback strategies for dev-kubernetes
+          if [ "${DEV_REVERTED}" = "false" ]; then
+            echo "⚠️ Primary revert strategies failed, trying fallback strategies..."
+            
+            if revert_branch "dev-kubernetes" "reset_strategy"; then
+              DEV_REVERTED=true
+            elif revert_branch "dev-kubernetes" "force_push"; then
+              DEV_REVERTED=true
+            fi
+          fi
+          
+          # Strategy 3: Revert main branch if this came from a PR
+          MAIN_REVERTED=false
+          if [ "${IS_FROM_MAIN_PR}" = "true" ] || [ "${DEV_REVERTED}" = "true" ]; then
+            echo "🔄 Attempting to revert main branch as well..."
+            
+            # Try to revert main branch
+            if revert_branch "main" "regular_revert"; then
+              MAIN_REVERTED=true
+            elif revert_branch "main" "reset_strategy"; then
+              MAIN_REVERTED=true
+            elif revert_branch "main" "force_push"; then
+              MAIN_REVERTED=true
+            else
+              echo "⚠️ Could not revert main branch - it may not have the same commit"
+            fi
+          fi
+          
+          # Create an issue to track the revert
+          if [ "${DEV_REVERTED}" = "true" ]; then
+            echo "📝 Creating GitHub issue to track the revert..."
+            
+            ISSUE_BODY="## 🚨 Automatic Revert Due to Docker Build Failure
+
+          ### 📋 Summary
+          The Docker build failed for a recent commit, and the following automatic reverts were performed:
+
+          ### 🔄 Revert Details
+          - **Failed Commit**: \`${CURRENT_COMMIT}\`
+          - **Failed Message**: \`${COMMIT_MESSAGE}\`
+          - **Author**: \`${{ github.event.head_commit.author.name }}\`
+          - **Workflow Run**: [\`${{ github.run_number }}\`](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ### ✅ Branches Reverted
+          - **dev-kubernetes**: ${DEV_REVERTED}
+          - **main**: ${MAIN_REVERTED}
+
+          ### 🔍 Next Steps
+          1. Check the failed workflow logs for build errors
+          2. Fix the Docker build issues locally
+          3. Test the build before creating a new PR
+          4. Close this issue once the problem is resolved
+
+          ### 🏗️ Build Error
+          The Docker build failed during the CI/CD process. Please check the workflow logs for detailed error information.
+
+          **This issue was automatically created by GitHub Actions** 🤖"
+
+            # Create the issue
+            gh issue create \
+              --title "🚨 Auto-revert: Docker build failed for ${CURRENT_COMMIT:0:8}" \
+              --body "${ISSUE_BODY}" \
+              --label "bug,ci/cd,auto-revert" \
+              --assignee "${{ github.event.head_commit.author.username }}" || \
+            gh issue create \
+              --title "🚨 Auto-revert: Docker build failed for ${CURRENT_COMMIT:0:8}" \
+              --body "${ISSUE_BODY}" \
+              --label "bug,ci/cd,auto-revert"
+            
+            echo "✅ GitHub issue created to track the revert"
+          fi
+          
+          # Summary
+          echo ""
+          echo "🎯 REVERT SUMMARY:"
+          echo "=================="
+          echo "dev-kubernetes reverted: ${DEV_REVERTED}"
+          echo "main branch reverted: ${MAIN_REVERTED}"
+          echo "Failed commit: ${CURRENT_COMMIT}"
+          echo "Issue created: true"
+          echo ""
+          
+          if [ "${DEV_REVERTED}" = "true" ]; then
+            echo "✅ Successfully reverted the failed build"
+          else
+            echo "❌ Failed to revert - manual intervention required"
+          fi
           
           # Exit with failure to stop the workflow
           exit 1
@@ -172,13 +376,20 @@ jobs:
         run: |
           echo "🔄 Creating Pull Request from dev-kubernetes to staging-kubernetes..."
           
+          # Ensure we're on the right branch
+          git fetch origin
+          git checkout dev-kubernetes
+          
           # Check if staging-kubernetes branch exists
           if ! git ls-remote --heads origin staging-kubernetes | grep staging-kubernetes; then
-            echo "⚠️ staging-kubernetes branch doesn't exist. Creating it..."
+            echo "⚠️ staging-kubernetes branch doesn't exist. Creating it from dev-kubernetes..."
             git checkout -b staging-kubernetes
             git push origin staging-kubernetes
             git checkout dev-kubernetes
           fi
+          
+          # Safely handle commit message (escape special characters)
+          SAFE_COMMIT_MESSAGE=$(echo "${{ steps.vars.outputs.commit_message }}" | sed 's/"/\\"/g' | tr -d '\n')
           
           # Create PR using GitHub CLI
           PR_BODY="## 📦 Docker Image Promotion
@@ -189,9 +400,10 @@ jobs:
           - **Docker Image**: \`${{ steps.vars.outputs.docker_tag }}\`
           - **Source Branch**: \`dev-kubernetes\`
           - **Target Branch**: \`staging-kubernetes\`
-          - **Commit Hash**: \`${{ github.sha }}\`
+          - **Commit Hash**: \`${{ steps.vars.outputs.commit_hash }}\`
+          - **Full SHA**: \`${{ github.sha }}\`
           - **Author**: \`${{ steps.vars.outputs.commit_author }}\`
-          - **Original Message**: \`${{ steps.vars.outputs.commit_message }}\`
+          - **Original Message**: \`${SAFE_COMMIT_MESSAGE}\`
 
           ### 🧪 Testing Status
           - ✅ Docker build successful
@@ -207,25 +419,40 @@ jobs:
           Run: \`${{ github.run_number }}\`"
 
           # Check if PR already exists
-          EXISTING_PR=$(gh pr list --base staging-kubernetes --head dev-kubernetes --json number --jq '.[0].number' || echo "")
+          EXISTING_PR=$(gh pr list --base staging-kubernetes --head dev-kubernetes --json number --jq '.[0].number' 2>/dev/null || echo "")
           
-          if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ]; then
+          if [ -n "$EXISTING_PR" ] && [ "$EXISTING_PR" != "null" ] && [ "$EXISTING_PR" != "" ]; then
             echo "📝 Updating existing PR #${EXISTING_PR}..."
-            gh pr edit $EXISTING_PR --body "$PR_BODY" --title "🚀 Promote frontend-user to staging (Updated)"
+            gh pr edit $EXISTING_PR \
+              --body "$PR_BODY" \
+              --title "🚀 Promote frontend-user to staging (Updated: ${{ steps.vars.outputs.commit_hash }})"
             echo "✅ Updated existing PR #${EXISTING_PR}"
           else
             echo "📝 Creating new Pull Request..."
-            PR_URL=$(gh pr create \
+            
+            # Create PR with error handling
+            if PR_URL=$(gh pr create \
               --base staging-kubernetes \
               --head dev-kubernetes \
-              --title "🚀 Promote Dev  to staging" \
+              --title "🚀 Promote frontend-user to staging (${{ steps.vars.outputs.commit_hash }})" \
               --body "$PR_BODY" \
               --label "enhancement" \
-              --assignee "${{ github.actor }}" \
-              --reviewer "${{ github.actor }}")
-            
-            echo "✅ Pull Request created successfully!"
-            echo "🔗 PR URL: $PR_URL"
+              --assignee "${{ github.actor }}" 2>/dev/null); then
+              
+              echo "✅ Pull Request created successfully!"
+              echo "🔗 PR URL: $PR_URL"
+            else
+              echo "⚠️ Failed to create PR with assignee/reviewer, trying without..."
+              PR_URL=$(gh pr create \
+                --base staging-kubernetes \
+                --head dev-kubernetes \
+                --title "🚀 Promote frontend-user to staging (${{ steps.vars.outputs.commit_hash }})" \
+                --body "$PR_BODY" \
+                --label "enhancement")
+              
+              echo "✅ Pull Request created successfully!"
+              echo "🔗 PR URL: $PR_URL"
+            fi
           fi
       
       - name: Summary
@@ -233,5 +460,6 @@ jobs:
         run: |
           echo "🎉 Deployment completed successfully!"
           echo "📦 Docker image pushed: ${{ steps.vars.outputs.docker_tag }}"
+          echo "🔖 Commit hash: ${{ steps.vars.outputs.commit_hash }}"
           echo "📝 Pull request created/updated for promotion to staging-kubernetes branch"
           echo "🤖 Ready for staging deployment approval!"
