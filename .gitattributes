@@ -1,0 +1,5 @@
+# Prevent .github folder from being merged into other branches
+.github/ merge=ours
+
+# This ensures that when merging from main to other branches,
+# the .github folder in the target branch (or lack thereof) is preserved
