@@ -274,12 +274,12 @@ jobs:
             gh issue create \
               --title "🚨 Auto-revert: Docker build failed for ${CURRENT_COMMIT:0:8}" \
               --body "${ISSUE_BODY}" \
-              --label "bug,ci/cd,auto-revert" \
+              --label "bug" \
               --assignee "${{ github.event.head_commit.author.username }}" || \
             gh issue create \
               --title "🚨 Auto-revert: Docker build failed for ${CURRENT_COMMIT:0:8}" \
               --body "${ISSUE_BODY}" \
-              --label "bug,ci/cd,auto-revert"
+              --label "bug"
             
             echo "✅ GitHub issue created to track the revert"
           fi
